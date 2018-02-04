@@ -35,6 +35,7 @@ HEADERS += \
         mainwindow.h \
     imagelistmodel.h \
     imagelistview.h \
+    rxeventloop.h \
 
 FORMS += \
         mainwindow.ui

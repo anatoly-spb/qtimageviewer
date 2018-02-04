@@ -1,6 +1,8 @@
 #ifndef IMAGELISTVIEW_H
 #define IMAGELISTVIEW_H
 
+#include "rxcpp/rx.hpp"
+
 #include <QAbstractItemView>
 #include <QCache>
 #include <QFuture>
@@ -21,6 +23,8 @@ struct ImageLoadingTask {
     QString imageFileName;
     std::unique_ptr<QImage> image;
 };
+
+using ImageLoadingTaskSharedPtr = std::shared_ptr<ImageLoadingTask>;
 
 /**
  * @brief The ImageListView class
@@ -53,21 +57,9 @@ protected:
      */
     QPair<int, int> modelIndexRangeForRect(const QRect& rect);
     /**
-     * @brief startScrollDelayTimer запускает таймер отсрочки скрола
+     * @brief emitLoadEvent помещает новое событие в поток m_loadEventStream
      */
-    void startScrollDelayTimer();
-    /**
-     * @brief stopScroollDelayTimer останавливает таймер отсрочки скрола
-     */
-    void stopScrollDelayTimer();
-    /**
-     * @brief startBackgroundLoading запускает фоновую загрузку
-     */
-    void startBackgroundLoading();
-    /**
-     * @brief stopBackgroundLoading останавливает фоновую загрузку
-     */
-    void stopBackgroundLoading();
+    void emitLoadEvent();
 
     // QAbstractItemView interface
 public:
@@ -103,26 +95,13 @@ private:
      */
     int m_columnCount = 5;
     /**
-     * @brief m_scrollDelayTimer таймер отсроченной реакции на скроллирование
-     */
-    QTimer* m_scrollDelayTimer = nullptr;
-    QTimer* m_updateDelayTimer = nullptr;
-    /**
-     * @brief m_loadFuture результат фоновой загрузки рисунков
-     */
-    QFuture<std::shared_ptr<ImageLoadingTask>> m_loadFuture;
-    /**
-     * @brief m_loadFutureWatcher наблюдатель за фоновой загрузкой
-     */
-    QFutureWatcher<std::shared_ptr<ImageLoadingTask>> m_loadFutureWatcher;
-    /**
-     * @brief m_updatedModelRows список модифицированный строк модели
-     */
-    QList<int> m_updatedModelRows;
-    /**
      * @brief m_imageCache кеш изображений фиксированного размера
      */
     QCache<QString, QImage> m_imageCache;
+    /**
+     * @brief m_loadEventStream поток загрузки
+     */
+    rxcpp::subjects::subject<int> m_loadEventStream;
 };
 
 #endif // IMAGELISTVIEW_H

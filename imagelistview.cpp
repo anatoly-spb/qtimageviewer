@@ -1,5 +1,7 @@
 #include "imagelistview.h"
 
+#include "rxeventloop.h"
+
 #include <QImage>
 #include <QPaintEvent>
 #include <QScrollBar>
@@ -12,61 +14,89 @@
 ImageListView::ImageListView(QWidget* parent)
     : QAbstractItemView(parent)
     , m_columnCount{ 5 }
-    , m_scrollDelayTimer{ new QTimer{ this } }
-    , m_updateDelayTimer{ new QTimer{ this } }
     , m_imageCache(100)
 {
     horizontalScrollBar()->setRange(0, 0);
     verticalScrollBar()->setRange(0, 0);
     setSelectionMode(ExtendedSelection);
     setSelectionBehavior(SelectItems);
-
-    //  подписываемся на таймер отложенной загрузки
-    m_scrollDelayTimer->setSingleShot(true);
-    connect(m_scrollDelayTimer, &QTimer::timeout, [this] {
-        qDebug() << "Scroll Delay Timer Fired";
-        startBackgroundLoading();
-    });
-    //  подписываемся на результат загрузки
-    connect(&m_loadFutureWatcher, &QFutureWatcherBase::resultsReadyAt, [this](int begin, int end) {
-        qDebug() << "Background Loading for images [" << begin << ":" << end << ") finished";
-        for (int index = begin; index < end; ++index) {
-            auto item = m_loadFuture.resultAt(index);
-            m_updatedModelRows.append(item->row);
-            m_imageCache.insert(item->imageFileName, item->image.release());
-            qDebug() << "Loading" << item->imageFileName << "finished";
-        }
-        m_updateDelayTimer->start(250);
-    });
-
-    //
-    m_updateDelayTimer->setSingleShot(true);
-    connect(m_updateDelayTimer, &QTimer::timeout, [this] {
-        qDebug() << "Update Delay Timer Fired";
-        QRect invalidatingRect;
-        for (auto&& row : m_updatedModelRows) {
-            auto rect = visualRect(model()->index(row, 0, rootIndex()));
-            invalidatingRect = invalidatingRect.united(rect);
-        }
-        if (viewport()->rect().intersects(invalidatingRect)) {
-            qDebug() << "Update the " << invalidatingRect << "region starting..";
-            viewport()->update(invalidatingRect);
-        }
-    });
+    qDebug() << "ThreadId:" << QThread::currentThreadId();
+    using namespace std::chrono_literals;
+    m_loadEventStream
+        .get_observable()
+        // переходим обработку в фоновый поток
+        .subscribe_on(rxcpp::synchronize_new_thread())
+        // игнорируем события интервал между которыми не превышает 250ms
+        .debounce(250ms)
+        // переводим обработку в ui поток
+        .observe_on(rxcpp::observe_on_run_loop(RxEventLoopAdapter::runLoop()))
+        // для каждого события загрузки
+        .map([this](auto value) {
+            static int count = 0;
+            ++count;
+            qDebug() << "ThreadId:" << QThread::currentThreadId() << "New Load Stream Started" << count;
+            return rxcpp::observable<>::create<ImageLoadingTaskSharedPtr>([this, value](rxcpp::subscriber<ImageLoadingTaskSharedPtr> s) {
+                QPair<int, int> modelRowRange = modelIndexRangeForRect(viewport()->rect());
+                qDebug() << "ThreadId:" << QThread::currentThreadId() << "Load Stream " << count << ": "
+                         << "Image Count:" << (modelRowRange.second - modelRowRange.first);
+                for (int row = modelRowRange.first; s.is_subscribed() && row < modelRowRange.second; ++row) {
+                    QString imageFileName = model()->data(model()->index(row, 0)).toString();
+                    QImage* imagePointer{ m_imageCache.take(imageFileName) };
+                    ImageLoadingTask imageLoadingTask{ row, imageFileName };
+                    if (imagePointer) {
+                        imageLoadingTask.image.reset(imagePointer);
+                    }
+                    qDebug() << "ThreadId:" << QThread::currentThreadId() << "Load Stream " << count << ": " << row << imageFileName << "emitted";
+                    s.on_next(std::make_shared<ImageLoadingTask>(std::move(imageLoadingTask)));
+                }
+                s.on_completed();
+            })
+                .as_dynamic();
+        })
+        .observe_on(rxcpp::observe_on_new_thread())
+        // если во время загрузки серии, возникает новая серия, о старой забываем
+        .switch_on_next()
+        // производим загрузку изображения
+        .map([](ImageLoadingTaskSharedPtr item) {
+            if (!item->image) {
+                item->image = std::make_unique<QImage>();
+            }
+            if (item->image->isNull()) {
+                qDebug() << "ThreadId:" << QThread::currentThreadId()
+                         << "Loading" << item->imageFileName << "..";
+                if (!item->image->load(item->imageFileName)) {
+                    qWarning() << "Loading" << item->imageFileName << "failed";
+                }
+            }
+            return item;
+        })
+        // буферизируем загруженные рисунки с приемлемым для пользователя интервалом
+        .buffer_with_time(250ms)
+        // переводим обработку в ui поток
+        .observe_on(rxcpp::observe_on_run_loop(RxEventLoopAdapter::runLoop()))
+        // финальная обработка
+        .subscribe([this](std::vector<ImageLoadingTaskSharedPtr> items) {
+            if (items.empty()) {
+                return;
+            }
+            qDebug() << "threadid" << QThread::currentThreadId() << "Process" << items.size() << "images";
+            QRect invalidatingRect;
+            for (auto&& item : items) {
+                m_imageCache.insert(item->imageFileName, item->image.release());
+                QRect itemRect = visualRect(model()->index(item->row, 0, rootIndex()));
+                invalidatingRect = invalidatingRect.united(itemRect);
+            }
+            if (viewport()->rect().intersects(invalidatingRect)) {
+                qDebug() << "Update the " << invalidatingRect << "region starting..";
+                viewport()->update(invalidatingRect);
+            }
+        });
 }
 
-void ImageListView::startScrollDelayTimer()
+void ImageListView::emitLoadEvent()
 {
-    qDebug() << "Scroll Delay Timer Restarted";
-    stopScrollDelayTimer();
-    m_scrollDelayTimer->start(250);
-}
-
-void ImageListView::stopScrollDelayTimer()
-{
-    m_updateDelayTimer->stop();
-    stopBackgroundLoading();
-    m_scrollDelayTimer->stop();
+    qDebug() << "Load Event emitted";
+    m_loadEventStream.get_subscriber().on_next(0);
 }
 
 int ImageListView::columnCount() const
@@ -102,53 +132,6 @@ QPair<int, int> ImageListView::modelIndexRangeForRect(const QRect& rect)
         }
     }
     return QPair<int, int>(begin, end);
-}
-
-void ImageListView::startBackgroundLoading()
-{
-    class ImageLoader {
-    public:
-        typedef std::shared_ptr<ImageLoadingTask> result_type;
-
-    public:
-        std::shared_ptr<ImageLoadingTask> operator()(std::shared_ptr<ImageLoadingTask> item)
-        {
-            if (!item->image) {
-                item->image = std::make_unique<QImage>();
-            }
-            if (item->image->isNull()) {
-                qDebug() << "ThreadId:" << QThread::currentThreadId() << "Loading" << item->imageFileName << "..";
-                if (!item->image->load(item->imageFileName)) {
-                    qWarning() << "Loading" << item->imageFileName << "failed";
-                }
-            }
-            return item;
-        }
-    };
-    stopBackgroundLoading();
-    QList<std::shared_ptr<ImageLoadingTask>> viewportItems;
-    QPair<int, int> modelRowRange = modelIndexRangeForRect(viewport()->rect());
-    for (int row = modelRowRange.first; row < modelRowRange.second; ++row) {
-        QString imageFileName = model()->data(model()->index(row, 0, rootIndex())).toString();
-        QImage* ptr = m_imageCache.take(imageFileName);
-        ImageLoadingTask item{ row, imageFileName };
-        if (ptr) {
-            item.image.reset(ptr);
-        }
-        viewportItems << std::make_shared<ImageLoadingTask>(std::move(item));
-    }
-    qDebug() << "Background Loading the " << viewportItems.size() << "images started";
-    m_loadFuture = QtConcurrent::mapped(viewportItems, ImageLoader{});
-    m_loadFutureWatcher.setFuture(m_loadFuture);
-}
-
-void ImageListView::stopBackgroundLoading()
-{
-    if (m_loadFuture.isRunning()) {
-        qDebug() << "Scroll Background Loading Is Running. Canceling...";
-        m_loadFuture.cancel();
-        qDebug() << "Scroll Background Loading Canceled";
-    }
 }
 
 QRect ImageListView::visualRect(const QModelIndex& index) const
@@ -346,7 +329,6 @@ void paintOutline(QPainter& painter, const QRect& rect)
 
 void ImageListView::paintEvent(QPaintEvent* event)
 {
-    m_updatedModelRows.clear();
     Q_UNUSED(event);
     QList<int> imageIndexList;
     QPair<int, int> rowRange = modelIndexRangeForRect(event->rect());
@@ -461,14 +443,14 @@ void ImageListView::verticalScrollbarValueChanged(int value)
 {
     qDebug() << "Image List View verticalScrollbarValueChanged" << value << "called";
     QAbstractItemView::verticalScrollbarValueChanged(value);
-    startScrollDelayTimer();
+    emitLoadEvent();
 }
 
 void ImageListView::resizeEvent(QResizeEvent* event)
 {
     qDebug() << "Image List View resizeEvent called";
     QAbstractItemView::resizeEvent(event);
-    startScrollDelayTimer();
+    emitLoadEvent();
 }
 
 void ImageListView::setModel(QAbstractItemModel* model)
@@ -480,8 +462,7 @@ void ImageListView::setModel(QAbstractItemModel* model)
 void ImageListView::reset()
 {
     qDebug() << "Image List View reset called";
-    m_imageCache.clear();
-    m_updatedModelRows.clear();
     QAbstractItemView::reset();
-    startScrollDelayTimer();
+    m_imageCache.clear();
+    emitLoadEvent();
 }
