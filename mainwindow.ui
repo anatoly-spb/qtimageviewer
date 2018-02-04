@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>MainWindow</class>
+ <widget class="QMainWindow" name="MainWindow">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>604</width>
+    <height>493</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>Image Viewer</string>
+  </property>
+  <widget class="QWidget" name="centralWidget">
+   <layout class="QVBoxLayout" name="verticalLayout">
+    <item>
+     <widget class="QSplitter" name="splitter">
+      <property name="orientation">
+       <enum>Qt::Horizontal</enum>
+      </property>
+      <widget class="QTreeView" name="treeView"/>
+      <widget class="ImageListView" name="listView"/>
+     </widget>
+    </item>
+   </layout>
+  </widget>
+  <widget class="QMenuBar" name="menuBar">
+   <property name="geometry">
+    <rect>
+     <x>0</x>
+     <y>0</y>
+     <width>604</width>
+     <height>26</height>
+    </rect>
+   </property>
+  </widget>
+  <widget class="QToolBar" name="mainToolBar">
+   <property name="orientation">
+    <enum>Qt::Horizontal</enum>
+   </property>
+   <property name="floatable">
+    <bool>true</bool>
+   </property>
+   <attribute name="toolBarArea">
+    <enum>TopToolBarArea</enum>
+   </attribute>
+   <attribute name="toolBarBreak">
+    <bool>false</bool>
+   </attribute>
+   <addaction name="actionTwo_Columns"/>
+   <addaction name="actionThree_Columns"/>
+  </widget>
+  <widget class="QStatusBar" name="statusBar"/>
+  <action name="actionTwo_Columns">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="icon">
+    <iconset resource="photoviewer.qrc">
+     <normaloff>:/icons/two.png</normaloff>:/icons/two.png</iconset>
+   </property>
+   <property name="text">
+    <string>Two Columns</string>
+   </property>
+  </action>
+  <action name="actionThree_Columns">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="icon">
+    <iconset resource="photoviewer.qrc">
+     <normaloff>:/icons/three.png</normaloff>:/icons/three.png</iconset>
+   </property>
+   <property name="text">
+    <string>Three Columns</string>
+   </property>
+  </action>
+ </widget>
+ <layoutdefault spacing="6" margin="11"/>
+ <customwidgets>
+  <customwidget>
+   <class>ImageListView</class>
+   <extends>QListView</extends>
+   <header>imagelistview.h</header>
+  </customwidget>
+ </customwidgets>
+ <resources>
+  <include location="photoviewer.qrc"/>
+ </resources>
+ <connections/>
+</ui>
