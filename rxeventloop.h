@@ -3,7 +3,6 @@
 
 #include <QThread>
 #include <QTimer>
-#include <QtDebug>
 
 #include "rxcpp/rx.hpp"
 
@@ -11,7 +10,9 @@
 
 /**
  * @brief The RxEventLoopAdapter class
- * Класс адаптера rxcpp run loop для работы с qt event loop
+ * Класс адаптера rxcpp run loop для работы в контексте очереди сообщений qt event loop
+ * по мотивам https://github.com/tetsurom/rxqt/blob/master/include/rxqt_run_loop.hpp
+ * с той лишь разницей, что это класс можно использовать безопасно в любом треде с qt event loop
  */
 class RxEventLoopAdapter {
 public:
@@ -31,9 +32,8 @@ private:
      */
     RxEventLoopAdapter()
     {
-        qDebug() << "RxEventLoopAdapter::RxEventLoopAdapter()";
         // просим rxcpp run_loop сообщать о планируемых событиях
-        m_rxRunLoop.set_notify_earlier_wakeup([this](std::chrono::steady_clock::time_point when) {
+        m_rxRunLoop.set_notify_earlier_wakeup([this](auto&& when) {
             const auto dispatchTimeOut = nextDispatchTimeOut(when);
             if (!m_timer.isActive() || dispatchTimeOut.count() < m_timer.remainingTime()) {
                 m_timer.start(dispatchTimeOut.count());
@@ -55,10 +55,13 @@ private:
         });
     }
 
+    /**
+      * @brief ~RxEventLoopAdapter деструктор отписывается от оповещения
+      * rxcpp run loop о предстоящих запланированных событиях
+      */
     ~RxEventLoopAdapter()
     {
-        qDebug() << "RxEventLoopAdapter::~RxEventLoopAdapter()";
-        m_rxRunLoop.set_notify_earlier_wakeup([](std::chrono::steady_clock::time_point) {});
+        m_rxRunLoop.set_notify_earlier_wakeup([](auto&&) {});
     }
 
     /**
@@ -81,9 +84,10 @@ private:
     }
 
     /**
-     * @brief nextDispatcheTimeOut вернуть таймаут, через который необходимы выполнить диспетчеризацию, запланированную на момент времени when
+     * @brief nextDispatcheTimeOut вернуть таймаут, через который необходимо выполнить диспетчеризацию,
+     * запланированную на момент времени when
      * @param when момент следующей диспетчеризации
-     * @return таймаут, через который необходимы выполнить диспетчеризацию
+     * @return таймаут, через который необходимо выполнить диспетчеризацию
      */
     std::chrono::milliseconds nextDispatchTimeOut(rxcpp::schedulers::run_loop::clock_type::time_point const& when) const
     {
@@ -96,7 +100,7 @@ private:
      */
     rxcpp::schedulers::run_loop m_rxRunLoop;
     /**
-     * @brief m_timer таймер, через который будет осуществляться активация диспетчеризации rxcpp run loop
+     * @brief m_timer таймер, управляющий диспетчеризацией rxcpp run loop
      */
     QTimer m_timer;
 };

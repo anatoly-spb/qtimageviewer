@@ -24,62 +24,51 @@ ImageListView::ImageListView(QWidget* parent)
     using namespace std::chrono_literals;
     m_loadEventStream
         .get_observable()
-        // переходим обработку в фоновый поток
-        .subscribe_on(rxcpp::synchronize_new_thread())
+        // устанавливаем контекст выполнения в фоновый поток
+        .subscribe_on(rxcpp::observe_on_event_loop())
         // игнорируем события интервал между которыми не превышает 250ms
         .debounce(250ms)
-        // переводим обработку в ui поток
+        // проранжированные события будем обрабатывать в основом потоке ui
         .observe_on(rxcpp::observe_on_run_loop(RxEventLoopAdapter::runLoop()))
         // для каждого события загрузки
         .map([this](auto value) {
-            static int count = 0;
-            ++count;
-            qDebug() << "ThreadId:" << QThread::currentThreadId() << "New Load Stream Started" << count;
             return rxcpp::observable<>::create<ImageLoadingTaskSharedPtr>([this, value](rxcpp::subscriber<ImageLoadingTaskSharedPtr> s) {
                 QPair<int, int> modelRowRange = modelIndexRangeForRect(viewport()->rect());
-                qDebug() << "ThreadId:" << QThread::currentThreadId() << "Load Stream " << count << ": "
-                         << "Image Count:" << (modelRowRange.second - modelRowRange.first);
                 for (int row = modelRowRange.first; s.is_subscribed() && row < modelRowRange.second; ++row) {
                     QString imageFileName = model()->data(model()->index(row, 0)).toString();
                     QImage* imagePointer{ m_imageCache.take(imageFileName) };
                     ImageLoadingTask imageLoadingTask{ row, imageFileName };
                     if (imagePointer) {
                         imageLoadingTask.image.reset(imagePointer);
+                    } else {
+                        imageLoadingTask.image = std::make_unique<QImage>();
                     }
-                    qDebug() << "ThreadId:" << QThread::currentThreadId() << "Load Stream " << count << ": " << row << imageFileName << "emitted";
+                    if (imageLoadingTask.image->isNull()) {
+                        if (!imageLoadingTask.image->load(imageFileName)) {
+                            qWarning() << "Loading" << imageFileName << "failed";
+                        }
+                    }
                     s.on_next(std::make_shared<ImageLoadingTask>(std::move(imageLoadingTask)));
                 }
                 s.on_completed();
             })
+                .subscribe_on(rxcpp::observe_on_event_loop())
                 .as_dynamic();
         })
-        .observe_on(rxcpp::observe_on_new_thread())
+        // уходим в фоновый пул потоков
+        .observe_on(rxcpp::observe_on_event_loop())
         // если во время загрузки серии, возникает новая серия, о старой забываем
         .switch_on_next()
-        // производим загрузку изображения
-        .map([](ImageLoadingTaskSharedPtr item) {
-            if (!item->image) {
-                item->image = std::make_unique<QImage>();
-            }
-            if (item->image->isNull()) {
-                qDebug() << "ThreadId:" << QThread::currentThreadId()
-                         << "Loading" << item->imageFileName << "..";
-                if (!item->image->load(item->imageFileName)) {
-                    qWarning() << "Loading" << item->imageFileName << "failed";
-                }
-            }
-            return item;
-        })
+        // уходим в фоновый пул потоков
+        .observe_on(rxcpp::observe_on_event_loop())
         // буферизируем загруженные рисунки с приемлемым для пользователя интервалом
         .buffer_with_time(250ms)
+        // пустые буферы игнорируем
+        .filter([](auto&& items) { return !items.empty(); })
         // переводим обработку в ui поток
         .observe_on(rxcpp::observe_on_run_loop(RxEventLoopAdapter::runLoop()))
-        // финальная обработка
-        .subscribe([this](std::vector<ImageLoadingTaskSharedPtr> items) {
-            if (items.empty()) {
-                return;
-            }
-            qDebug() << "threadid" << QThread::currentThreadId() << "Process" << items.size() << "images";
+        // обновление ui
+        .subscribe([this](auto&& items) {
             QRect invalidatingRect;
             for (auto&& item : items) {
                 m_imageCache.insert(item->imageFileName, item->image.release());
