@@ -6,10 +6,25 @@
 #include <QPaintEvent>
 #include <QScrollBar>
 #include <QStylePainter>
-#include <QThread>
-#include <QTimer>
-#include <QtConcurrent>
-#include <QtDebug>
+
+struct ImageLoadingTask {
+    ImageLoadingTask(int row, QString imageFileName, QImage* image)
+        : row(row)
+        , imageFileName(imageFileName)
+        , image(image)
+    {
+    }
+    ImageLoadingTask(const ImageLoadingTask&) = delete;
+    ImageLoadingTask(ImageLoadingTask&&) = default;
+    ImageLoadingTask& operator=(const ImageLoadingTask&) = delete;
+    ImageLoadingTask& operator=(ImageLoadingTask&&) = default;
+    ~ImageLoadingTask()
+    {
+    }
+    int row;
+    QString imageFileName;
+    std::unique_ptr<QImage> image;
+};
 
 ImageListView::ImageListView(QWidget* parent)
     : QAbstractItemView(parent)
@@ -20,7 +35,6 @@ ImageListView::ImageListView(QWidget* parent)
     verticalScrollBar()->setRange(0, 0);
     setSelectionMode(ExtendedSelection);
     setSelectionBehavior(SelectItems);
-    qDebug() << "ThreadId:" << QThread::currentThreadId();
     using namespace std::chrono_literals;
     m_loadEventStream
         .get_observable()
@@ -31,33 +45,46 @@ ImageListView::ImageListView(QWidget* parent)
         // проранжированные события будем обрабатывать в основом потоке ui
         .observe_on(rxcpp::observe_on_run_loop(RxEventLoopAdapter::runLoop()))
         // для каждого события загрузки
-        .map([this](auto value) {
-            return rxcpp::observable<>::create<ImageLoadingTaskSharedPtr>([this, value](rxcpp::subscriber<ImageLoadingTaskSharedPtr> s) {
-                QPair<int, int> modelRowRange = modelIndexRangeForRect(viewport()->rect());
-                for (int row = modelRowRange.first; s.is_subscribed() && row < modelRowRange.second; ++row) {
-                    QString imageFileName = model()->data(model()->index(row, 0)).toString();
-                    QImage* imagePointer{ m_imageCache.take(imageFileName) };
-                    ImageLoadingTask imageLoadingTask{ row, imageFileName };
-                    if (imagePointer) {
-                        imageLoadingTask.image.reset(imagePointer);
-                    } else {
-                        imageLoadingTask.image = std::make_unique<QImage>();
-                    }
-                    if (imageLoadingTask.image->isNull()) {
-                        if (!imageLoadingTask.image->load(imageFileName)) {
-                            qWarning() << "Loading" << imageFileName << "failed";
-                        }
-                    }
-                    s.on_next(std::make_shared<ImageLoadingTask>(std::move(imageLoadingTask)));
+        .map([this](auto&&) {
+            // пока находимся в основном ui потоке, формируем список задач
+            QList<ImageLoadingTaskSharedPtr> taskList;
+            QPair<int, int> modelRowRange = modelIndexRangeForRect(viewport()->rect());
+            for (int row = modelRowRange.first; row < modelRowRange.second; ++row) {
+                QString imageFileName = model()->data(model()->index(row, 0)).toString();
+                QImage* imagePointer{ m_imageCache.take(imageFileName) };
+                ImageLoadingTask imageLoadingTask{ row, imageFileName, imagePointer };
+                taskList << std::make_shared<ImageLoadingTask>(std::move(imageLoadingTask));
+            }
+            return rxcpp::observable<>::create<ImageLoadingTaskSharedPtr>([taskList](rxcpp::subscriber<ImageLoadingTaskSharedPtr> s) {
+                for (auto&& task : taskList) {
+                    s.on_next(task);
                 }
                 s.on_completed();
             })
+                // загружаем изображение в отдельном треде
+                .map([](ImageLoadingTaskSharedPtr item) {
+                    return rxcpp::observable<>::create<ImageLoadingTaskSharedPtr>([item](rxcpp::subscriber<ImageLoadingTaskSharedPtr> s) {
+                        if (!item->image) {
+                            item->image = std::make_unique<QImage>();
+                        }
+                        if (item->image->isNull()) {
+                            item->image->load(item->imageFileName);
+                        }
+                        s.on_next(item);
+                        s.on_completed();
+                    })
+                        .subscribe_on(rxcpp::observe_on_event_loop())
+                        .as_dynamic();
+                })
+                // все загруженные изображения преобразовываем в поток
+                .concat(rxcpp::observe_on_event_loop())
+                // отвязываемся от ui потока
                 .subscribe_on(rxcpp::observe_on_event_loop())
                 .as_dynamic();
         })
         // уходим в фоновый пул потоков
         .observe_on(rxcpp::observe_on_event_loop())
-        // если во время загрузки серии, возникает новая серия, о старой забываем
+        // если во время загрузки серии изображений возникает новая серия, о старой забываем
         .switch_on_next()
         // уходим в фоновый пул потоков
         .observe_on(rxcpp::observe_on_event_loop())
@@ -76,7 +103,6 @@ ImageListView::ImageListView(QWidget* parent)
                 invalidatingRect = invalidatingRect.united(itemRect);
             }
             if (viewport()->rect().intersects(invalidatingRect)) {
-                qDebug() << "Update the " << invalidatingRect << "region starting..";
                 viewport()->update(invalidatingRect);
             }
         });
@@ -84,7 +110,6 @@ ImageListView::ImageListView(QWidget* parent)
 
 void ImageListView::emitLoadEvent()
 {
-    qDebug() << "Load Event emitted";
     m_loadEventStream.get_subscriber().on_next(0);
 }
 
@@ -95,7 +120,6 @@ int ImageListView::columnCount() const
 
 void ImageListView::setColumnCount(int columnCount)
 {
-    qDebug() << "Image List View setColumnCount" << columnCount << "called";
     m_columnCount = columnCount;
     reset();
 }
@@ -367,8 +391,6 @@ void ImageListView::paintEvent(QPaintEvent* event)
 
 void ImageListView::updateGeometries()
 {
-    qDebug() << "Image List View updateGeometries called";
-
     // получаем прямоугольник, описывающий окно просмотра
     QRect viewportRect = viewport()->rect();
     // получаем ширину окна просмотра
@@ -389,7 +411,6 @@ void ImageListView::updateGeometries()
     // расчитываем высоту плитки в видовом окне
     int tileHeight = qMin(tileWidth, viewportRect.height());
 
-    qDebug() << "Image List View set image cache size to " << viewportRowCount * m_columnCount * 5;
     // устанавливаем размер кеша равный пятикратной емкости видового окна
     m_imageCache.setMaxCost(viewportRowCount * m_columnCount * 5);
 
@@ -430,27 +451,23 @@ void ImageListView::updateGeometries()
 
 void ImageListView::verticalScrollbarValueChanged(int value)
 {
-    qDebug() << "Image List View verticalScrollbarValueChanged" << value << "called";
     QAbstractItemView::verticalScrollbarValueChanged(value);
     emitLoadEvent();
 }
 
 void ImageListView::resizeEvent(QResizeEvent* event)
 {
-    qDebug() << "Image List View resizeEvent called";
     QAbstractItemView::resizeEvent(event);
     emitLoadEvent();
 }
 
 void ImageListView::setModel(QAbstractItemModel* model)
 {
-    qDebug() << "Image List View setModel called";
     QAbstractItemView::setModel(model);
 }
 
 void ImageListView::reset()
 {
-    qDebug() << "Image List View reset called";
     QAbstractItemView::reset();
     m_imageCache.clear();
     emitLoadEvent();

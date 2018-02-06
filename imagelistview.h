@@ -5,25 +5,14 @@
 
 #include <QAbstractItemView>
 #include <QCache>
-#include <QFuture>
-#include <QFutureWatcher>
-#include <QImage>
-#include <QMetaObject>
 
 #include <memory>
 
-class QTimer;
-
 /**
- * @brief The LoadedImage struct
- * Вспомогательная структура для фоновой загрузки
+ * @brief The ImageLoadingTask struct
+ * Вспомогательная структура для фоновой загрузки изображений
  */
-struct ImageLoadingTask {
-    int row;
-    QString imageFileName;
-    std::unique_ptr<QImage> image;
-};
-
+struct ImageLoadingTask;
 using ImageLoadingTaskSharedPtr = std::shared_ptr<ImageLoadingTask>;
 
 /**
