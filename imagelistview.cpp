@@ -7,6 +7,16 @@
 #include <QScrollBar>
 #include <QStylePainter>
 
+/**
+ * @brief CACHE_STORAGE_FACTOR
+ * Множитель для увеличение размера кеша
+ */
+const int CACHE_STORAGE_FACTOR = 3;
+
+/**
+ * @brief The ImageLoadingTask struct
+ * Всмогательная структура данных для обеспечения фоновой загрузки изображения
+ */
 struct ImageLoadingTask {
     ImageLoadingTask(int row, QString imageFileName, QImage* image)
         : row(row)
@@ -39,7 +49,7 @@ ImageListView::ImageListView(QWidget* parent)
     m_loadEventStream
         .get_observable()
         // устанавливаем контекст выполнения в фоновый поток
-        .subscribe_on(rxcpp::observe_on_event_loop())
+        .subscribe_on(rxcpp::observe_on_new_thread())
         // игнорируем события интервал между которыми не превышает 250ms
         .debounce(250ms)
         // проранжированные события будем обрабатывать в основом потоке ui
@@ -47,47 +57,47 @@ ImageListView::ImageListView(QWidget* parent)
         // для каждого события загрузки
         .map([this](auto&&) {
             // пока находимся в основном ui потоке, формируем список задач
-            QList<ImageLoadingTaskSharedPtr> taskList;
+            std::vector<ImageLoadingTaskSharedPtr> taskList;
             QPair<int, int> modelRowRange = modelIndexRangeForRect(viewport()->rect());
             for (int row = modelRowRange.first; row < modelRowRange.second; ++row) {
                 QString imageFileName = model()->data(model()->index(row, 0)).toString();
                 QImage* imagePointer{ m_imageCache.take(imageFileName) };
                 ImageLoadingTask imageLoadingTask{ row, imageFileName, imagePointer };
-                taskList << std::make_shared<ImageLoadingTask>(std::move(imageLoadingTask));
+                taskList.emplace_back(std::make_shared<ImageLoadingTask>(std::move(imageLoadingTask)));
             }
-            return rxcpp::observable<>::create<ImageLoadingTaskSharedPtr>([taskList](rxcpp::subscriber<ImageLoadingTaskSharedPtr> s) {
-                for (auto&& task : taskList) {
-                    s.on_next(task);
-                }
-                s.on_completed();
-            })
-                // загружаем изображение в отдельном треде
-                .map([](ImageLoadingTaskSharedPtr item) {
-                    return rxcpp::observable<>::create<ImageLoadingTaskSharedPtr>([item](rxcpp::subscriber<ImageLoadingTaskSharedPtr> s) {
-                        if (!item->image) {
-                            item->image = std::make_unique<QImage>();
-                        }
-                        if (item->image->isNull()) {
-                            item->image->load(item->imageFileName);
-                        }
-                        s.on_next(item);
-                        s.on_completed();
-                    })
+            // емкость чанков для фоновой загрузки
+            int chunk_count = m_columnCount;
+            // после того как все, что нас связывало с ui потоком исчезло
+            // запускаем загрузку серии
+            return rxcpp::observable<>::iterate(std::move(taskList))
+                // отвязываемся от ui потока
+                .subscribe_on(rxcpp::observe_on_event_loop())
+                // делим по чанкам
+                .buffer(chunk_count)
+                // загрузку буфера делает в отдельном треде
+                .map([](std::vector<ImageLoadingTaskSharedPtr> items) {
+                    return rxcpp::observable<>::iterate(std::move(items))
                         .subscribe_on(rxcpp::observe_on_event_loop())
+                        .tap([](ImageLoadingTaskSharedPtr item) {
+                            if (!item->image) {
+                                item->image = std::make_unique<QImage>();
+                            }
+                            if (item->image->isNull()) {
+                                item->image->load(item->imageFileName);
+                            }
+                        })
                         .as_dynamic();
                 })
                 // все загруженные изображения преобразовываем в поток
-                .concat(rxcpp::observe_on_event_loop())
-                // отвязываемся от ui потока
-                .subscribe_on(rxcpp::observe_on_event_loop())
+                .merge(rxcpp::serialize_event_loop())
                 .as_dynamic();
         })
         // уходим в фоновый пул потоков
-        .observe_on(rxcpp::observe_on_event_loop())
+        .observe_on(rxcpp::serialize_new_thread())
         // если во время загрузки серии изображений возникает новая серия, о старой забываем
         .switch_on_next()
         // уходим в фоновый пул потоков
-        .observe_on(rxcpp::observe_on_event_loop())
+        .observe_on(rxcpp::serialize_new_thread())
         // буферизируем загруженные рисунки с приемлемым для пользователя интервалом
         .buffer_with_time(250ms)
         // пустые буферы игнорируем
@@ -411,8 +421,8 @@ void ImageListView::updateGeometries()
     // расчитываем высоту плитки в видовом окне
     int tileHeight = qMin(tileWidth, viewportRect.height());
 
-    // устанавливаем размер кеша равный пятикратной емкости видового окна
-    m_imageCache.setMaxCost(viewportRowCount * m_columnCount * 5);
+    // устанавливаем размер кеша равный CACHE_STORAGE_FACTOR кратной емкости видового окна
+    m_imageCache.setMaxCost(viewportRowCount * m_columnCount * CACHE_STORAGE_FACTOR);
 
     // если высоты вида недостаточна для показа модели целиком
     if (viewportRowCount * tileHeight > viewportRect.height()) {
