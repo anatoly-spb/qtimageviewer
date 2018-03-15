@@ -8,7 +8,7 @@ QT       += core gui concurrent
 
 greaterThan(QT_MAJOR_VERSION, 4): QT += widgets
 
-INCLUDEPATH +=  $$(RXCPP_HOME)/rx/v2/src
+#INCLUDEPATH +=  $$(RXCPP_HOME)/rx/v2/src
 TARGET = imageviewer
 TEMPLATE = app
 RC_FILE = imageviewer.rc

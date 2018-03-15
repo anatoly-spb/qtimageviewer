@@ -13,7 +13,7 @@
 class QTimer;
 
 /**
- * @brief The LoadedImage struct
+ * @brief The ImageLoadingTask struct
  * Вспомогательная структура для фоновой загрузки
  */
 struct ImageLoadingTask {
@@ -21,6 +21,8 @@ struct ImageLoadingTask {
     QString imageFileName;
     std::unique_ptr<QImage> image;
 };
+using ImageLoadingTaskSharedPtr = std::shared_ptr<ImageLoadingTask>;
+using ImageLoadingTaskFutureWatcher = QFutureWatcher<ImageLoadingTaskSharedPtr>;
 
 /**
  * @brief The ImageListView class
@@ -51,29 +53,20 @@ protected:
      * @param rect
      * @return полуотркрытый диапазон модельных строк (model index row)
      */
-    QPair<int, int> modelIndexRangeForRect(const QRect& rect);
+    QPair<int, int> modelRowRangeForViewportRect(const QRect& rect);
     /**
      * @brief startScrollDelayTimer запускает таймер отсрочки скрола
      */
     void startScrollDelayTimer();
-    /**
-     * @brief stopScroollDelayTimer останавливает таймер отсрочки скрола
-     */
     void stopScrollDelayTimer();
-    /**
-     * @brief startBackgroundLoading запускает фоновую загрузку
-     */
-    void startBackgroundLoading();
-    /**
-     * @brief stopBackgroundLoading останавливает фоновую загрузку
-     */
-    void stopBackgroundLoading();
+    void startAsyncImageLoading();
+    void stopAsyncImageLoading();
 
     // QAbstractItemView interface
 public:
     virtual QRect visualRect(const QModelIndex& index) const override;
-    virtual void scrollTo(const QModelIndex& index, ScrollHint hint) override;
     virtual QModelIndex indexAt(const QPoint& point) const override;
+    virtual void scrollTo(const QModelIndex& index, ScrollHint hint) override;
     virtual void setModel(QAbstractItemModel* model) override;
 
 public slots:
@@ -106,15 +99,14 @@ private:
      * @brief m_scrollDelayTimer таймер отсроченной реакции на скроллирование
      */
     QTimer* m_scrollDelayTimer = nullptr;
-    QTimer* m_updateDelayTimer = nullptr;
     /**
-     * @brief m_loadFuture результат фоновой загрузки рисунков
+     * @brief m_updateDelayTimer таймер отсроченной реакции на обновление вида
      */
-    QFuture<std::shared_ptr<ImageLoadingTask>> m_loadFuture;
+    QTimer* m_updateDelayTimer = nullptr;
     /**
      * @brief m_loadFutureWatcher наблюдатель за фоновой загрузкой
      */
-    QFutureWatcher<std::shared_ptr<ImageLoadingTask>> m_loadFutureWatcher;
+    ImageLoadingTaskFutureWatcher m_imageLoadingFutureWatcher;
     /**
      * @brief m_updatedModelRows список модифицированный строк модели
      */
