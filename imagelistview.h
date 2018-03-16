@@ -96,21 +96,21 @@ private:
      */
     int m_columnCount = 5;
     /**
-     * @brief m_scrollDelayTimer таймер отсроченной реакции на скроллирование
+     * @brief m_loadingDelayTimer таймер отсроченной реакции на скроллирование
      */
-    QTimer* m_scrollDelayTimer = nullptr;
+    QTimer* m_loadingDelayTimer = nullptr;
     /**
      * @brief m_updateDelayTimer таймер отсроченной реакции на обновление вида
      */
-    QTimer* m_updateDelayTimer = nullptr;
+    QTimer* m_updatingDelayTimer = nullptr;
     /**
-     * @brief m_loadFutureWatcher наблюдатель за фоновой загрузкой
+     * @brief m_imageLoadingFutureWatcher наблюдатель за фоновой загрузкой
      */
     ImageLoadingTaskFutureWatcher m_imageLoadingFutureWatcher;
     /**
-     * @brief m_updatedModelRows список модифицированный строк модели
+     * @brief m_invalidatingModelRows список инвалидируемых строк модели
      */
-    QList<int> m_updatedModelRows;
+    QList<int> m_invalidatingModelRows;
     /**
      * @brief m_imageCache кеш изображений фиксированного размера
      */

@@ -12,8 +12,8 @@
 ImageListView::ImageListView(QWidget* parent)
     : QAbstractItemView(parent)
     , m_columnCount{ 5 }
-    , m_scrollDelayTimer{ new QTimer{ this } }
-    , m_updateDelayTimer{ new QTimer{ this } }
+    , m_loadingDelayTimer{ new QTimer{ this } }
+    , m_updatingDelayTimer{ new QTimer{ this } }
     , m_imageCache(100)
 {
     horizontalScrollBar()->setRange(0, 0);
@@ -22,8 +22,8 @@ ImageListView::ImageListView(QWidget* parent)
     setSelectionBehavior(SelectItems);
 
     //  подписываемся на таймер отложенной загрузки
-    m_scrollDelayTimer->setSingleShot(true);
-    connect(m_scrollDelayTimer, &QTimer::timeout, [this] {
+    m_loadingDelayTimer->setSingleShot(true);
+    connect(m_loadingDelayTimer, &QTimer::timeout, [this] {
         qDebug() << "Scroll Delay Timer Fired";
         startAsyncImageLoading();
     });
@@ -55,20 +55,20 @@ ImageListView::ImageListView(QWidget* parent)
             qDebug() << "resultsReadyAt: Background Loading for images [" << begin << ":" << end << ") finished";
             for (int index = begin; index < end; ++index) {
                 auto item = m_imageLoadingFutureWatcher.resultAt(index);
-                m_updatedModelRows.append(item->row);
+                m_invalidatingModelRows.append(item->row);
                 m_imageCache.insert(item->imageFileName, item->image.release());
                 qDebug() << "Loading" << item->imageFileName << "finished";
             }
-            if (!m_updateDelayTimer->isActive())
-                m_updateDelayTimer->start(250);
+            if (!m_updatingDelayTimer->isActive())
+                m_updatingDelayTimer->start(250);
         });
 
     //
-    m_updateDelayTimer->setSingleShot(true);
-    connect(m_updateDelayTimer, &QTimer::timeout, [this] {
+    m_updatingDelayTimer->setSingleShot(true);
+    connect(m_updatingDelayTimer, &QTimer::timeout, [this] {
         qDebug() << "Update Delay Timer Fired";
         QRect invalidatingRect;
-        for (auto&& row : m_updatedModelRows) {
+        for (auto&& row : m_invalidatingModelRows) {
             auto rect = visualRect(model()->index(row, 0, rootIndex()));
             invalidatingRect = invalidatingRect.united(rect);
         }
@@ -83,14 +83,14 @@ void ImageListView::startScrollDelayTimer()
 {
     qDebug() << "Scroll Delay Timer Restarted";
     stopScrollDelayTimer();
-    m_scrollDelayTimer->start(250);
+    m_loadingDelayTimer->start(250);
 }
 
 void ImageListView::stopScrollDelayTimer()
 {
-    m_updateDelayTimer->stop();
+    m_updatingDelayTimer->stop();
     stopAsyncImageLoading();
-    m_scrollDelayTimer->stop();
+    m_loadingDelayTimer->stop();
 }
 
 int ImageListView::columnCount() const
@@ -181,15 +181,15 @@ QRect ImageListView::visualRect(const QModelIndex& index) const
         return QRect();
     }
     // по строке модельного индекса вычисляем
-    // строку плитки
+    // строку фото
     int r = index.row() / m_columnCount;
-    // колонку плитки
+    // колонку фото
     int c = index.row() % m_columnCount;
-    // вычисляем ширину плитки
+    // вычисляем ширину фото
     int width = viewport()->width() / m_columnCount;
-    // вычисляем высоту плитки
+    // вычисляем высоту фото
     int height = qMin(width, viewport()->height());
-    // получаем координаты плитки в системе координат window
+    // получаем координаты фото в системе координат window
     int x = c * width;
     int y = r * height;
     // переводим в систему координат видового окна
@@ -215,8 +215,6 @@ void ImageListView::scrollTo(const QModelIndex& index, ScrollHint hint)
         verticalScrollBar()->setValue(
             verticalScrollBar()->value() + qMin(rect.bottom() - view.bottom(), rect.top() - view.top()));
     }
-
-    update();
 }
 
 QModelIndex ImageListView::indexAt(const QPoint& point) const
@@ -225,13 +223,13 @@ QModelIndex ImageListView::indexAt(const QPoint& point) const
         // point передан в системе координат viewport-a, поэтому
         // переводим координаты точки в систему координат window
         QPoint p{ point.x() + horizontalOffset(), point.y() + verticalOffset() };
-        // расчитываем ширину плитки
+        // расчитываем ширину фото
         int width = viewport()->width() / m_columnCount;
-        // расчитываем высоту плитки
+        // расчитываем высоту фото
         int height = qMin(width, viewport()->height());
-        // расчитываем колонку плитки
+        // расчитываем колонку фото
         int c = p.x() / width;
-        // расчитываем строку плитки
+        // расчитываем строку фото
         int r = p.y() / height;
         // переводим в линейный индекс
         int i = r * m_columnCount + c;
@@ -370,7 +368,7 @@ void paintOutline(QPainter& painter, const QRect& rect)
 
 void ImageListView::paintEvent(QPaintEvent* event)
 {
-    m_updatedModelRows.clear();
+    m_invalidatingModelRows.clear();
     Q_UNUSED(event);
     QList<int> imageIndexList;
     QPair<int, int> rowRange = modelRowRangeForViewportRect(event->rect());
@@ -425,37 +423,29 @@ void ImageListView::updateGeometries()
     // получаем прямоугольник, описывающий окно просмотра
     QRect viewportRect = viewport()->rect();
     // получаем ширину окна просмотра
-    int viewportWidth = viewportRect.width();
+    int viewportWidth = width();
     // получаем ширину вертикальной полосы прокрутки
     int verticalScrollBarWidth = verticalScrollBar()->width();
-    // если вертикальная полоса прокрутки видна
-    if (verticalScrollBar()->isVisible()) {
-        // корректируем ширину окна просмотра
-        viewportWidth += verticalScrollBarWidth;
-    }
     // получаем количество строк модели
     int modelRowCount = model()->rowCount(rootIndex());
     // расчитываем число строк в видовом окне с учетом числа столбцов
     int viewportRowCount = modelRowCount / m_columnCount + ((modelRowCount % m_columnCount) ? 1 : 0);
-    // расчитываем ширину плитки в видовом окне
-    int tileWidth = viewportWidth / m_columnCount;
-    // расчитываем высоту плитки в видовом окне
-    int tileHeight = qMin(tileWidth, viewportRect.height());
-
-    qDebug() << "Image List View set image cache size to " << viewportRowCount * m_columnCount * 5;
-    // устанавливаем размер кеша равный пятикратной емкости видового окна
-    m_imageCache.setMaxCost(viewportRowCount * m_columnCount * 5);
+    // расчитываем ширину фото в видовом окне
+    int imageWidth = viewportWidth / m_columnCount;
+    // расчитываем высоту фото в видовом окне
+    int imageHeight = qMin(imageWidth, viewportRect.height());
+    // устанавливаем размер кеша
+    m_imageCache.setMaxCost(viewportRowCount * m_columnCount * 3);
 
     // если высоты вида недостаточна для показа модели целиком
-    if (viewportRowCount * tileHeight > viewportRect.height()) {
+    if (viewportRowCount * imageHeight > viewportRect.height()) {
         // корректируем ширину окна просмотра, поскольку станет видима полоса прокрутки
         viewportWidth -= verticalScrollBarWidth;
-        // расчитываем новую ширину плитки в видовом окне с учетом корректировки
-        int tileWidth = viewportWidth / m_columnCount;
-        // расчитываем новую высоту плитки в видовом окне с учетом корректировки
-        int tileHeight = qMin(tileWidth, viewportRect.height());
+        // расчитываем новый размер фото в видовом окне
+        imageWidth = viewportWidth / m_columnCount;
+        imageHeight = qMin(imageWidth, viewportRect.height());
         // расчитываем максимальное смещение вертикальной полосы прокрутки с учетом корректировки
-        int verticalScrollBarMaximum = viewportRowCount * tileHeight;
+        int verticalScrollBarMaximum = viewportRowCount * imageHeight;
         // если после корректировки высоты видового окна достаточно, чтобы вместить модель целиком
         if (verticalScrollBarMaximum < viewportRect.height()) {
             // оставляем один пиксель, чтобы полоса прокрутки осталась видима
@@ -464,15 +454,10 @@ void ImageListView::updateGeometries()
             // убираем одну страницу
             verticalScrollBarMaximum -= viewportRect.height();
         }
-        // расчитываем шаг для листания page up/down
-        int pageStep = viewportRect.height() / tileHeight * tileHeight;
-        // расчитываем шаг для прокрутки через up/down
-        int singleStep = tileHeight / 2;
-
         // настраиваем параметры вертикальной полосы прокрутки
         verticalScrollBar()->setRange(0, verticalScrollBarMaximum);
-        verticalScrollBar()->setPageStep(pageStep);
-        verticalScrollBar()->setSingleStep(singleStep);
+        verticalScrollBar()->setPageStep(viewportRect.height() / imageHeight * imageHeight);
+        verticalScrollBar()->setSingleStep(imageHeight);
 
     } else {
         // окна просмотра достаточно, чтобы вместить модель целиком
@@ -511,7 +496,7 @@ void ImageListView::reset()
 {
     qDebug() << "Image List View reset called";
     m_imageCache.clear();
-    m_updatedModelRows.clear();
+    m_invalidatingModelRows.clear();
     qDebug() << "reset: before QAbstractItemView::reset()";
     QAbstractItemView::reset();
     qDebug() << "reset: after QAbstractItemView::reset()";
