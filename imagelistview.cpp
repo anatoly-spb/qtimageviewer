@@ -14,7 +14,7 @@ ImageListView::ImageListView(QWidget* parent)
     , m_columnCount{ 5 }
     , m_loadingDelayTimer{ new QTimer{ this } }
     , m_updatingDelayTimer{ new QTimer{ this } }
-    , m_imageCache(100)
+    , m_imageCache(1)
 {
     horizontalScrollBar()->setRange(0, 0);
     verticalScrollBar()->setRange(0, 0);
@@ -49,6 +49,7 @@ ImageListView::ImageListView(QWidget* parent)
             qDebug() << "resultReadyAt(" << index << ")";
         });
     //  подписываемся на результат загрузки
+
     connect(&m_imageLoadingFutureWatcher,
         &QFutureWatcherBase::resultsReadyAt,
         [this](int begin, int end) {
@@ -428,24 +429,26 @@ void ImageListView::updateGeometries()
     int verticalScrollBarWidth = verticalScrollBar()->width();
     // получаем количество строк модели
     int modelRowCount = model()->rowCount(rootIndex());
-    // расчитываем число строк в видовом окне с учетом числа столбцов
-    int viewportRowCount = modelRowCount / m_columnCount + ((modelRowCount % m_columnCount) ? 1 : 0);
+    // расчитываем число строк в окне модели
+    int windowRowCount = modelRowCount / m_columnCount + ((modelRowCount % m_columnCount) ? 1 : 0);
     // расчитываем ширину фото в видовом окне
     int imageWidth = viewportWidth / m_columnCount;
     // расчитываем высоту фото в видовом окне
     int imageHeight = qMin(imageWidth, viewportRect.height());
-    // устанавливаем размер кеша
-    m_imageCache.setMaxCost(viewportRowCount * m_columnCount * 3);
+    if (imageHeight) {
+        int viewportRowCount = (viewportRect.height() / imageHeight + 1);
+        m_imageCache.setMaxCost(viewportRowCount * m_columnCount * 2);
+    }
 
     // если высоты вида недостаточна для показа модели целиком
-    if (viewportRowCount * imageHeight > viewportRect.height()) {
+    if (windowRowCount * imageHeight > viewportRect.height()) {
         // корректируем ширину окна просмотра, поскольку станет видима полоса прокрутки
         viewportWidth -= verticalScrollBarWidth;
         // расчитываем новый размер фото в видовом окне
         imageWidth = viewportWidth / m_columnCount;
         imageHeight = qMin(imageWidth, viewportRect.height());
         // расчитываем максимальное смещение вертикальной полосы прокрутки с учетом корректировки
-        int verticalScrollBarMaximum = viewportRowCount * imageHeight;
+        int verticalScrollBarMaximum = windowRowCount * imageHeight;
         // если после корректировки высоты видового окна достаточно, чтобы вместить модель целиком
         if (verticalScrollBarMaximum < viewportRect.height()) {
             // оставляем один пиксель, чтобы полоса прокрутки осталась видима
