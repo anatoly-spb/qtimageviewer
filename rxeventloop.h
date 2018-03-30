@@ -6,18 +6,14 @@
 
 #include "rxcpp/rx.hpp"
 
-#include <chrono>
-
 /**
- * @brief The RxEventLoopAdapter class
- * Класс адаптера rxcpp run loop для работы в контексте очереди сообщений qt event loop
- * по мотивам https://github.com/tetsurom/rxqt/blob/master/include/rxqt_run_loop.hpp
- * с той лишь разницей, что это класс можно использовать безопасно в любом треде с qt event loop
+ * @brief The RxEventLoopAdapter class is rxcpp run loop adapter adapted to execution in qt event loop
+ * @see https://github.com/tetsurom/rxqt/blob/master/include/rxqt_run_loop.hpp
  */
 class RxEventLoopAdapter {
 public:
     /**
-     * @brief rxRunLoopAdaptedToEventLoop возвращает rxcpp run loop, адаптированный к работе через qt event loop
+     * @brief rxRunLoopAdaptedToEventLoop returns adapted rxcpp run loop
      * @return rxcpp run loop
      */
     static rxcpp::schedulers::run_loop& runLoop()
@@ -28,36 +24,42 @@ public:
 
 private:
     /**
-     * @brief RxEventLoopAdapter конструирует адаптер
+     * @brief RxEventLoopAdapter constructs adapter object
      */
     RxEventLoopAdapter()
+        : m_ownerThreadId(QThread::currentThreadId())
     {
-        // просим rxcpp run_loop сообщать о планируемых событиях
+        // ask to rxcpp run_loop to notify about sheduled events
         m_rxRunLoop.set_notify_earlier_wakeup([this](auto&& when) {
-            const auto dispatchTimeOut = nextDispatchTimeOut(when);
-            if (!m_timer.isActive() || dispatchTimeOut.count() < m_timer.remainingTime()) {
-                m_timer.start(dispatchTimeOut.count());
+            const auto sheduledTimeOut = sheduledTimeOutFor(when);
+            if (!m_timer.isActive() || sheduledTimeOut.count() < m_timer.remainingTime()) {
+                int dispatched = static_cast<int>(sheduledTimeOut.count());
+                if (dispatched < 0) {
+                    dispatched = 0;
+                }
+                if (m_ownerThreadId == QThread::currentThreadId()) {
+                    m_timer.start(dispatched);
+                } else {
+                    QMetaObject::invokeMethod(&m_timer, "start", Qt::QueuedConnection, Q_ARG(int, dispatched));
+                }
             }
         });
         m_timer.setSingleShot(true);
         m_timer.setTimerType(Qt::PreciseTimer);
         QTimer::connect(&m_timer, &QTimer::timeout, [this]() {
-            // пока есть запланированные события выполняем диспетчеризацию
             while (!m_rxRunLoop.empty() && m_rxRunLoop.peek().when < m_rxRunLoop.now()) {
                 m_rxRunLoop.dispatch();
             }
-            // если в очереди остались запланированные на будущее события,
-            // "заводим" будильник на диспетчеризацию ближайшего
+            // if there are future events, shedule them
             if (!m_rxRunLoop.empty()) {
-                const auto dispatcheTimeOut = nextDispatchTimeOut(m_rxRunLoop.peek().when);
-                m_timer.start(static_cast<int>(dispatcheTimeOut.count()));
+                const auto sheduledTimeOut = sheduledTimeOutFor(m_rxRunLoop.peek().when);
+                m_timer.start(static_cast<int>(sheduledTimeOut.count()));
             }
         });
     }
 
     /**
-      * @brief ~RxEventLoopAdapter деструктор отписывается от оповещения
-      * rxcpp run loop о предстоящих запланированных событиях
+      * @brief ~RxEventLoopAdapter destructs adapter
       */
     ~RxEventLoopAdapter()
     {
@@ -65,7 +67,7 @@ private:
     }
 
     /**
-     * @brief rxRunLoop вернуть адаптированный для работы с qt event loop rxcpp run loop
+     * @brief rxRunLoop return rxcpp run loop
      * @return адаптированный rxcpp run loop
      */
     rxcpp::schedulers::run_loop& rxRunLoop()
@@ -74,33 +76,36 @@ private:
     }
 
     /**
-     * Адаптировать duration, исходя из точности To
+     * Ceil duration
      */
     template <class To, class Rep, class Period>
     static To durationCeil(const std::chrono::duration<Rep, Period>& duration)
     {
-        const auto as_To = std::chrono::duration_cast<To>(duration);
-        return (as_To < duration) ? (as_To + To{ 1 }) : as_To;
+        const auto to = std::chrono::duration_cast<To>(duration);
+        return (to < duration) ? (to + To{ 1 }) : to;
     }
 
     /**
-     * @brief nextDispatcheTimeOut вернуть таймаут, через который необходимо выполнить диспетчеризацию,
-     * запланированную на момент времени when
-     * @param when момент следующей диспетчеризации
-     * @return таймаут, через который необходимо выполнить диспетчеризацию
+     * @brief nextDispatcheTimeOut must return timeout interval for the sheduled event
+     * @param when time moment when event is scheduled
+     * @return timeout
      */
-    std::chrono::milliseconds nextDispatchTimeOut(rxcpp::schedulers::run_loop::clock_type::time_point const& when) const
+    std::chrono::milliseconds sheduledTimeOutFor(rxcpp::schedulers::run_loop::clock_type::time_point const& when) const
     {
         return durationCeil<std::chrono::milliseconds>(when - m_rxRunLoop.now());
     }
 
 private:
     /**
-     * @brief m_rxRunLoop адаптируемый rxcpp run loop
+     * @brief m_ownerThreadId thread id where this object was created
+     */
+    Qt::HANDLE m_ownerThreadId;
+    /**
+     * @brief m_rxRunLoop rxcpp run loop
      */
     rxcpp::schedulers::run_loop m_rxRunLoop;
     /**
-     * @brief m_timer таймер, управляющий диспетчеризацией rxcpp run loop
+     * @brief m_timer dispatch timer
      */
     QTimer m_timer;
 };

@@ -15,7 +15,7 @@ const int CACHE_STORAGE_FACTOR = 3;
 
 /**
  * @brief The ImageLoadingTask struct
- * Всмогательная структура данных для обеспечения фоновой загрузки изображения
+ * Вспомогательная структура данных для обеспечения фоновой загрузки изображения
  */
 struct ImageLoadingTask {
     ImageLoadingTask(int row, QString imageFileName, QImage* image)
